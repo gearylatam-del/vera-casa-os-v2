@@ -2,14 +2,12 @@ export default {
   async fetch(request, env) {
     const url = new URL(request.url);
 
-    // Ana sayfa — basit HTML panel
     if (url.pathname === "/") {
       return new Response(HTML, {
         headers: { "Content-Type": "text/html; charset=utf-8" },
       });
     }
 
-    // Health kontrolü
     if (url.pathname === "/api/health") {
       return Response.json({
         ok: true,
@@ -21,7 +19,6 @@ export default {
       });
     }
 
-    // Fiyat hesaplama
     if (url.pathname === "/api/pricing/candidates") {
       const listPrice = Number(url.searchParams.get("listPrice"));
       if (!Number.isFinite(listPrice) || listPrice <= 0) {
@@ -38,7 +35,6 @@ export default {
       });
     }
 
-    // Sohbet
     if (url.pathname === "/api/chat" && request.method === "POST") {
       try {
         const body = await request.json();
