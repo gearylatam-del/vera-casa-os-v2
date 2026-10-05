@@ -1,8 +1,9 @@
+import { HTML } from "./panel.js";
+
 export default {
   async fetch(request, env) {
     const url = new URL(request.url);
 
-    // Tabloları ilk istekte oluştur
     try {
       await env.DB.prepare(
         `CREATE TABLE IF NOT EXISTS messages (
@@ -23,6 +24,13 @@ export default {
           decided_at INTEGER
         )`
       ).run();
+      await env.DB.prepare(
+        `CREATE TABLE IF NOT EXISTS shopify_auth (
+          key TEXT PRIMARY KEY,
+          value TEXT NOT NULL,
+          created_at INTEGER NOT NULL
+        )`
+      ).run();
     } catch (e) {}
 
     if (url.pathname === "/") {
@@ -32,16 +40,143 @@ export default {
     }
 
     if (url.pathname === "/api/health") {
+      const tokenRow = await env.DB.prepare(
+        `SELECT value FROM shopify_auth WHERE key = 'access_token'`
+      ).first();
       return Response.json({
         ok: true,
         service: "VERA CASA OS",
-        version: "0.4.0",
+        version: "0.5.0",
         model: "@cf/meta/llama-3.3-70b-instruct-fp8-fast",
         supplier: "La Casa de Kadir",
         freeShippingThresholdBs: 500,
         memory: "d1",
         approvals: true,
+        shopify: {
+          configured: !!(env.SHOPIFY_CLIENT_ID && env.SHOPIFY_CLIENT_SECRET),
+          store: env.SHOPIFY_STORE || null,
+          connected: !!tokenRow,
+        },
       });
+    }
+
+    if (url.pathname === "/api/shopify/install") {
+      if (!env.SHOPIFY_CLIENT_ID || !env.SHOPIFY_CLIENT_SECRET) {
+        return new Response("Shopify yapılandırılmamış", { status: 500 });
+      }
+      const state = crypto.randomUUID();
+      await env.DB.prepare(
+        `INSERT OR REPLACE INTO shopify_auth (key, value, created_at) VALUES ('state', ?, ?)`
+      ).bind(state, Date.now()).run();
+
+      const redirectUri = "https://vera-casa-os-v2.geary-latam.workers.dev/api/shopify/callback";
+      const scopes = "read_products,write_products,read_orders,write_orders,read_customers,read_inventory,write_inventory,read_locations,read_price_rules,write_price_rules";
+
+      const authUrl =
+        `https://${env.SHOPIFY_STORE}/admin/oauth/authorize` +
+        `?client_id=${env.SHOPIFY_CLIENT_ID}` +
+        `&scope=${scopes}` +
+        `&redirect_uri=${encodeURIComponent(redirectUri)}` +
+        `&state=${state}`;
+
+      return Response.redirect(authUrl, 302);
+    }
+
+    if (url.pathname === "/api/shopify/callback") {
+      const code = url.searchParams.get("code");
+      const state = url.searchParams.get("state");
+      const shop = url.searchParams.get("shop");
+
+      if (!code || !shop) {
+        return new Response("Eksik parametre (code/shop)", { status: 400 });
+      }
+
+      const savedState = await env.DB.prepare(
+        `SELECT value FROM shopify_auth WHERE key = 'state'`
+      ).first();
+
+      if (!savedState || savedState.value !== state) {
+        return new Response("Geçersiz state", { status: 400 });
+      }
+
+      const tokenResponse = await fetch(
+        `https://${shop}/admin/oauth/access_token`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            client_id: env.SHOPIFY_CLIENT_ID,
+            client_secret: env.SHOPIFY_CLIENT_SECRET,
+            code: code,
+          }),
+        }
+      );
+
+      if (!tokenResponse.ok) {
+        const errText = await tokenResponse.text();
+        return new Response(`Token alınamadı: ${errText}`, { status: 500 });
+      }
+
+      const tokenData = await tokenResponse.json();
+      const accessToken = tokenData.access_token;
+
+      await env.DB.prepare(
+        `INSERT OR REPLACE INTO shopify_auth (key, value, created_at) VALUES ('access_token', ?, ?)`
+      ).bind(accessToken, Date.now()).run();
+
+      await env.DB.prepare(
+        `INSERT OR REPLACE INTO shopify_auth (key, value, created_at) VALUES ('shop', ?, ?)`
+      ).bind(shop, Date.now()).run();
+
+      return Response.redirect(
+        "https://vera-casa-os-v2.geary-latam.workers.dev/?shopify=connected",
+        302
+      );
+    }
+
+    if (url.pathname === "/api/shopify/products") {
+      const tokenRow = await env.DB.prepare(
+        `SELECT value FROM shopify_auth WHERE key = 'access_token'`
+      ).first();
+      const shopRow = await env.DB.prepare(
+        `SELECT value FROM shopify_auth WHERE key = 'shop'`
+      ).first();
+
+      if (!tokenRow || !shopRow) {
+        return Response.json({ ok: false, error: "shopify_not_connected" }, { status: 400 });
+      }
+
+      try {
+        const r = await fetch(
+          `https://${shopRow.value}/admin/api/2024-10/products.json?limit=20`,
+          { headers: { "X-Shopify-Access-Token": tokenRow.value } }
+        );
+        const data = await r.json();
+        return Response.json({ ok: true, count: (data.products || []).length, products: data.products || [] });
+      } catch (err) {
+        return Response.json({ ok: false, error: err.message }, { status: 500 });
+      }
+    }
+
+    if (url.pathname === "/api/shopify/status") {
+      const tokenRow = await env.DB.prepare(
+        `SELECT value, created_at FROM shopify_auth WHERE key = 'access_token'`
+      ).first();
+      const shopRow = await env.DB.prepare(
+        `SELECT value FROM shopify_auth WHERE key = 'shop'`
+      ).first();
+
+      return Response.json({
+        ok: true,
+        connected: !!tokenRow,
+        shop: shopRow?.value || null,
+        connected_at: tokenRow?.created_at || null,
+      });
+    }
+
+    if (url.pathname === "/api/shopify/disconnect" && request.method === "POST") {
+      await env.DB.prepare(`DELETE FROM shopify_auth WHERE key IN ('access_token', 'shop')`).run();
+      return Response.json({ ok: true });
     }
 
     if (url.pathname === "/api/pricing/candidates") {
@@ -76,8 +211,7 @@ export default {
       const sessionId = url.searchParams.get("session_id") || "fatih";
       try {
         const result = await env.DB.prepare(
-          `SELECT role, content, created_at FROM messages
-           WHERE session_id = ? ORDER BY id ASC LIMIT 100`
+          `SELECT role, content, created_at FROM messages WHERE session_id = ? ORDER BY id ASC LIMIT 100`
         ).bind(sessionId).all();
         return Response.json({ ok: true, session_id: sessionId, count: (result.results || []).length, messages: result.results || [] });
       } catch (err) {
@@ -85,16 +219,11 @@ export default {
       }
     }
 
-    // ============ ONAY SİSTEMİ ============
-
-    // Bekleyen onayları listele
     if (url.pathname === "/api/approvals" && request.method === "GET") {
       const sessionId = url.searchParams.get("session_id") || "fatih";
       try {
         const result = await env.DB.prepare(
-          `SELECT id, description, status, created_at FROM approvals
-           WHERE session_id = ? AND status = 'pending'
-           ORDER BY created_at DESC`
+          `SELECT id, description, status, created_at FROM approvals WHERE session_id = ? AND status = 'pending' ORDER BY created_at DESC`
         ).bind(sessionId).all();
         return Response.json({ ok: true, approvals: result.results || [] });
       } catch (err) {
@@ -102,7 +231,6 @@ export default {
       }
     }
 
-    // Onay ver veya reddet
     if (url.pathname === "/api/approvals/decide" && request.method === "POST") {
       try {
         const body = await request.json();
@@ -114,7 +242,6 @@ export default {
           `UPDATE approvals SET status = ?, decided_at = ? WHERE id = ?`
         ).bind(decision, Date.now(), id).run();
 
-        // Karar verildikten sonra Vera'ya bilgi ver
         const approvalRow = await env.DB.prepare(
           `SELECT description FROM approvals WHERE id = ?`
         ).bind(id).first();
@@ -133,8 +260,6 @@ export default {
       }
     }
 
-    // ============ SOHBET ============
-
     if (url.pathname === "/api/chat" && request.method === "POST") {
       try {
         const body = await request.json();
@@ -145,8 +270,7 @@ export default {
         }
 
         const historyResult = await env.DB.prepare(
-          `SELECT role, content FROM messages WHERE session_id = ?
-           ORDER BY id DESC LIMIT 20`
+          `SELECT role, content FROM messages WHERE session_id = ? ORDER BY id DESC LIMIT 20`
         ).bind(sessionId).all();
 
         const history = (historyResult.results || []).reverse();
@@ -155,8 +279,15 @@ export default {
           `INSERT INTO messages (session_id, role, content, created_at) VALUES (?, 'user', ?, ?)`
         ).bind(sessionId, message, Date.now()).run();
 
+        const shopifyToken = await env.DB.prepare(
+          `SELECT value FROM shopify_auth WHERE key = 'access_token'`
+        ).first();
+        const shopifyContext = shopifyToken
+          ? "\n\nDURUM: Shopify bağlı. Ürünleri listelemek için kullanıcı isterse /api/shopify/products çağrılabilir."
+          : "\n\nDURUM: Shopify henüz bağlı değil. Kullanıcıya 'Shopify'ı bağlamak için panelde yeşil butona bas' diyebilirsin.";
+
         const messages = [
-          { role: "system", content: SYSTEM_PROMPT },
+          { role: "system", content: SYSTEM_PROMPT + shopifyContext },
           ...history,
           { role: "user", content: message },
         ];
@@ -168,8 +299,6 @@ export default {
         });
 
         const rawAnswer = extractText(result);
-
-        // Cevaptaki [ONAY: ...] işaretlerini işle
         const { answer, created } = await processApprovals(env, sessionId, rawAnswer);
 
         await env.DB.prepare(
@@ -204,16 +333,12 @@ async function processApprovals(env, sessionId, text) {
     const id = crypto.randomUUID();
     try {
       await env.DB.prepare(
-        `INSERT INTO approvals (id, session_id, description, status, created_at)
-         VALUES (?, ?, ?, 'pending', ?)`
+        `INSERT INTO approvals (id, session_id, description, status, created_at) VALUES (?, ?, ?, 'pending', ?)`
       ).bind(id, sessionId, description, Date.now()).run();
       created.push({ id, description });
-    } catch (e) {
-      // aynı istek gelirse duplicate olabilir, sorun değil
-    }
+    } catch (e) {}
   }
 
-  // Marker'ları cevaptan kaldır
   const cleaned = text.replace(regex, "").replace(/\n{3,}/g, "\n\n").trim();
   return { answer: cleaned || text, created };
 }
@@ -249,7 +374,6 @@ KİMLİK:
 - Kısa konuş. En fazla 3-4 cümle veya 3 madde.
 - Sade Türkçe kullan. Süsleme yapma.
 - Şu kelimeleri KULLANMA: emisyon, yörünge, telemetry, mekanizma, entegre, optimum, minimize, maksimize, sinerji, ekosistem, matris, dinamiği, parametre.
-- "Merhaba Fatih." gibi sade başla.
 
 İŞ BİLGİSİ:
 - Dropshipping. Tedarikçi: La Casa de Kadir.
@@ -260,6 +384,7 @@ KİMLİK:
 - Kapıda ödeme (COD) aktif.
 - 500 Bs üzeri siparişte müşteriye kargo ücretsiz.
 - Kargo: Correos Bolivia.
+- Shopify mağazası: veracasabolivia.myshopify.com
 - Dropshipping'de fiziksel envanter YOKTUR.
 
 ONAY SİSTEMİ (ÇOK ÖNEMLİ):
@@ -269,213 +394,16 @@ sakın "yaptım" deme. Bunun yerine cevabının SONUNA ayrı bir satır olarak �
 
 [ONAY: kısa açıklama]
 
-Örnek: Kullanıcı "şu ürünü yayınla" derse, sen şöyle cevap ver:
+Örnek: Kullanıcı "şu ürünü yayınla" derse:
 "Ürün hazır. Yayınlamak için onayını bekliyorum.
 [ONAY: X ürününü Shopify'da yayınla]"
-
-Sistem bu [ONAY: ...] işaretini okuyup panelde bir onay kartı oluşturacak.
-Fatih Onayla derse "Onaylandı, yapıyorum" de. Reddet derse "Anlaşıldı, iptal ettim" de.
-
-ÖNEMLİ: [ONAY: ...] işareti dışında JSON veya özel format KULLANMA.
-Normal Türkçe konuş. Sadece onay gerektiren işlemlerde [ONAY: ...] ekle.
 
 DÜRÜSTLÜK:
 - Bilmediğin şeyi uydurma. "Bilmiyorum" de.
 - Yapmadığın işi "yaptım" diye anlatma.
-- Kargo fiyatı, pazar fiyatı, stok durumu gibi bilgileri uydurma.`;
+- Kargo fiyatı, pazar fiyatı, stok durumu gibi bilgileri uydurma.
 
-const HTML = `<!DOCTYPE html>
-<html lang="tr">
-<head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Vera Casa OS</title>
-<style>
-* { box-sizing: border-box; margin: 0; padding: 0; }
-body {
-  font-family: -apple-system, system-ui, sans-serif;
-  background: #0a0a0a; color: #eee;
-  min-height: 100vh; padding: 20px;
-  max-width: 600px; margin: 0 auto;
-}
-h1 { text-align: center; font-size: 28px; letter-spacing: 4px; margin: 20px 0 6px; }
-.sub { text-align: center; color: #888; font-size: 13px; margin-bottom: 30px; }
-.card {
-  background: #151515; border: 1px solid #262626;
-  border-radius: 16px; padding: 18px; margin-bottom: 16px;
-}
-.card h2 { font-size: 17px; margin-bottom: 6px; }
-.card p { color: #888; font-size: 13px; margin-bottom: 12px; }
-textarea {
-  width: 100%; background: #0a0a0a; border: 1px solid #262626;
-  border-radius: 12px; padding: 12px; color: #eee;
-  font-size: 15px; font-family: inherit; resize: none;
-}
-textarea:focus { outline: none; border-color: #555; }
-button {
-  background: #fff; color: #000; border: none;
-  border-radius: 12px; padding: 12px 20px;
-  font-size: 15px; font-weight: 600;
-  cursor: pointer; margin-top: 10px;
-}
-button:active { opacity: 0.7; }
-.btn-clear {
-  background: #2a2a2a; color: #aaa; font-size: 12px;
-  padding: 6px 12px; margin-left: 8px;
-}
-#answer {
-  margin-top: 16px; padding: 14px;
-  background: #0a0a0a; border: 1px solid #262626;
-  border-radius: 12px; min-height: 60px;
-  white-space: pre-wrap; font-size: 14px; line-height: 1.5;
-}
-.stats { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
-.stat {
-  background: #151515; border: 1px solid #262626;
-  border-radius: 14px; padding: 14px;
-}
-.stat .num { font-size: 22px; font-weight: 700; }
-.stat .lbl { font-size: 12px; color: #888; margin-top: 4px; }
-.approval-item {
-  background: #1a1200; border: 1px solid #4a3a00;
-  border-radius: 12px; padding: 14px; margin-bottom: 10px;
-}
-.approval-item .desc {
-  font-size: 14px; margin-bottom: 10px; line-height: 1.4;
-}
-.approval-item .actions { display: flex; gap: 8px; }
-.approval-item button {
-  padding: 8px 16px; font-size: 13px; margin: 0; flex: 1;
-}
-.btn-approve { background: #2d7a3e; color: #fff; }
-.btn-reject { background: #7a2d2d; color: #fff; }
-.empty-approvals {
-  color: #666; font-size: 13px; text-align: center;
-  padding: 12px; font-style: italic;
-}
-</style>
-</head>
-<body>
-<h1>VERA</h1>
-<div class="sub">Vera Casa Operating System</div>
-
-<div class="card" id="approvals-card" style="display:none">
-  <h2>⏳ Onay bekleyen işlemler</h2>
-  <div id="approvals-list"></div>
-</div>
-
-<div class="card">
-  <h2>Vera'ya sor <button class="btn-clear" onclick="clearMemory()">Hafızayı sil</button></h2>
-  <p>İşletmeni yönet, kararları hazırla, kritik işlemleri onaya bırak.</p>
-  <textarea id="msg" rows="3" placeholder="Örn: Bugün ne yapmamız gerekiyor?"></textarea>
-  <button onclick="send()">Gönder</button>
-  <div id="answer">Hazırım Fatih.</div>
-</div>
-
-<div class="stats">
-  <div class="stat"><div class="num">29</div><div class="lbl">rol</div></div>
-  <div class="stat"><div class="num">500 Bs</div><div class="lbl">ücretsiz kargo eşiği</div></div>
-  <div class="stat"><div class="num">20%</div><div class="lbl">tedarikçi indirimi</div></div>
-  <div class="stat"><div class="num" id="approval-count">0</div><div class="lbl">bekleyen onay</div></div>
-</div>
-
-<script>
-const SESSION = 'fatih';
-
-async function send() {
-  const box = document.getElementById('answer');
-  const msg = document.getElementById('msg').value.trim();
-  if (!msg) return;
-  box.textContent = 'Vera düşünüyor...';
-  try {
-    const r = await fetch('/api/chat', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ message: msg, session_id: SESSION })
-    });
-    const data = await r.json();
-    box.textContent = data.ok ? data.answer : ('Hata: ' + data.error);
-    document.getElementById('msg').value = '';
-    loadApprovals();
-  } catch (e) {
-    box.textContent = 'Bağlantı hatası: ' + e.message;
-  }
-}
-
-async function loadApprovals() {
-  try {
-    const r = await fetch('/api/approvals?session_id=' + SESSION);
-    const data = await r.json();
-    const list = document.getElementById('approvals-list');
-    const card = document.getElementById('approvals-card');
-    const count = document.getElementById('approval-count');
-
-    if (!data.ok || !data.approvals || data.approvals.length === 0) {
-      card.style.display = 'none';
-      count.textContent = '0';
-      return;
-    }
-
-    card.style.display = 'block';
-    count.textContent = String(data.approvals.length);
-    list.innerHTML = '';
-
-    for (const a of data.approvals) {
-      const item = document.createElement('div');
-      item.className = 'approval-item';
-      item.innerHTML = '<div class="desc">' + escapeHtml(a.description) + '</div>' +
-        '<div class="actions">' +
-        '<button class="btn-approve" onclick="decide(\\'' + a.id + '\\', \\'approved\\')">✓ Onayla</button>' +
-        '<button class="btn-reject" onclick="decide(\\'' + a.id + '\\', \\'rejected\\')">✗ Reddet</button>' +
-        '</div>';
-      list.appendChild(item);
-    }
-  } catch (e) {
-    console.error(e);
-  }
-}
-
-async function decide(id, decision) {
-  try {
-    const r = await fetch('/api/approvals/decide', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ id, decision })
-    });
-    const data = await r.json();
-    if (data.ok) {
-      loadApprovals();
-    } else {
-      alert('Hata: ' + data.error);
-    }
-  } catch (e) {
-    alert('Bağlantı hatası: ' + e.message);
-  }
-}
-
-async function clearMemory() {
-  if (!confirm('Hafıza ve onaylar silinsin mi?')) return;
-  try {
-    const r = await fetch('/api/memory/clear', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ session_id: SESSION })
-    });
-    const data = await r.json();
-    document.getElementById('answer').textContent = data.ok ? 'Hafıza silindi.' : 'Hata: ' + data.error;
-    loadApprovals();
-  } catch (e) {
-    document.getElementById('answer').textContent = 'Bağlantı hatası: ' + e.message;
-  }
-}
-
-function escapeHtml(s) {
-  return String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
-}
-
-// Sayfa açılınca ve her 30 saniyede onayları yenile
-loadApprovals();
-setInterval(loadApprovals, 30000);
-</script>
-</body>
-</html>`;
+YASAKLAR:
+- JSON gösterme.
+- Ham reasoning gösterme.
+- İngilizce teknik terim kullanma.`;
