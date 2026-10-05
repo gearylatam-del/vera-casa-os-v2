@@ -330,7 +330,8 @@ async function chat(request, env) {
     });
 
     const rawAnswer = extractText(result);
-    const { answer, created } = await processApprovals(env, sessionId, rawAnswer, message);
+const { answer: processedAnswer, created } = await processApprovals(env, sessionId, rawAnswer, message);
+const answer = ensureShippingWarning(processedAnswer, message);
 
     await env.DB.prepare(
       `INSERT INTO messages (session_id, role, content, created_at) VALUES (?, 'assistant', ?, ?)`
