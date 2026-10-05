@@ -9,3 +9,7 @@ binding = "AI"
 binding = "DB"
 database_name = "vera-memory"
 database_id = "ab102cb1-6fe8-4380-bbe5-e7b69f4a28c9"
+
+[vars]
+SHOPIFY_STORE = "veracasabolivia.myshopify.com"
+SHOPIFY_CLIENT_ID = "a56dfaa473f3582692c1ab5d2a9cc502"
