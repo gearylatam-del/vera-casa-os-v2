@@ -70,3 +70,20 @@ export function shouldForceNoApproval(message) {
   // Bilgi sorusu ve kritik işlem DEĞİLSE, onay zorlama
   return isInfoQuestion && !isCriticalAction;
 }
+export function ensureShippingWarning(answer, userMessage) {
+  const { isShippingQuestion, price } = analyzeMessage(userMessage);
+
+  // Sadece kargo sorusu ve fiyat tespit edildiyse kontrol et
+  if (!isShippingQuestion || price === null) return answer;
+
+  // Cevapta zaten uyarı var mı?
+  const hasWarning = /değişebilir|başlangıç|kesin tutar|kapıda kesin/i.test(answer);
+  if (hasWarning) return answer;
+
+  // Uyarıyı ekle
+  const warning = price >= 500
+    ? "\n\nNot: 500 Bs ve üzeri sipariş olduğu için kargo müşteriye ücretsizdir. Kargo gideri Vera Casa tarafından karşılanır."
+    : "\n\nNot: Kargo ücreti 22,50 Bs başlangıçtır (2 kg'a kadar, kapıda ödeme dahil). Kesin tutar paket ağırlığına ve teslimat adresine göre değişebilir; kargo görevlisi kapıda kesin tutarı bildirecektir.";
+
+  return answer + warning;
+}
