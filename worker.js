@@ -13,7 +13,7 @@ export default {
         ok: true,
         service: "VERA CASA OS",
         version: "0.2.0",
-        model: "@cf/zai-org/glm-4.7-flash",
+        model: "@cf/meta/llama-3.3-70b-instruct-fp8-fast",
         supplier: "La Casa de Kadir",
         freeShippingThresholdBs: 500,
       });
