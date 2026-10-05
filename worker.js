@@ -43,15 +43,14 @@ export default {
           return Response.json({ error: "message_required" }, { status: 400 });
         }
 
-        const result = await env.AI.run("@cf/zai-org/glm-4.7-flash", {
-          messages: [
-            { role: "system", content: SYSTEM_PROMPT },
-            { role: "user", content: message },
-          ],
-          max_completion_tokens: 2048,
-          reasoning_effort: "low",
-        });
-
+        const result = await env.AI.run("@cf/meta/llama-3.3-70b-instruct-fp8-fast", {
+  messages: [
+    { role: "system", content: SYSTEM_PROMPT },
+    { role: "user", content: message },
+  ],
+  max_tokens: 800,
+  temperature: 0.6,
+});
         const answer = extractText(result);
         return Response.json({ ok: true, answer });
       } catch (err) {
