@@ -1,4 +1,4 @@
-export const HTML = `<!DOCTYPE html>
+export const HTML = String.raw`<!DOCTYPE html>
 <html lang="tr">
 <head>
 <meta charset="utf-8">
