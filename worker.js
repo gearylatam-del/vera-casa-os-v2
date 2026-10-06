@@ -1,4 +1,4 @@
-import { buildContext, shouldForceNoApproval } from "./logic.js";
+import { buildContext, shouldForceNoApproval, ensureShippingWarning } from "./logic.js";
 export default {
   async fetch(request, env) {
     const url = new URL(request.url);
