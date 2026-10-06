@@ -1,6 +1,4 @@
-import { HTML } from "./panel.js";
-import { buildContext, shouldForceNoApproval, ensureShippingWarning } from "./logic.js";
-
+import { buildContext, shouldForceNoApproval } from "./logic.js";
 export default {
   async fetch(request, env) {
     const url = new URL(request.url);
@@ -8,7 +6,10 @@ export default {
 
     await ensureTables(env);
 
-    if (path === "/" && request.method === "GET") return html(HTML);
+    if (path === "/" && request.method === "GET") {
+  const assetUrl = new URL("/index.html", request.url);
+  return env.ASSETS.fetch(new Request(assetUrl, request));
+    }
     if (path === "/api/health" && request.method === "GET") return health(env);
     if (path === "/api/shopify/install" && request.method === "GET") return shopifyInstall(env);
     if (path === "/api/shopify/callback" && request.method === "GET") return shopifyCallback(request, env);
