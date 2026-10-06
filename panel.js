@@ -1,90 +1,3 @@
-import { VoiceAgent, unlockAudio } from '@todoforai/voiceloop';
-
-// Mevcut sistem prompt'unuzu buraya taşıyın (veya worker.js'ten çekin)
-const SYSTEM_PROMPT = `Sen Vera'sın — Vera Casa Bolivia'nın merkezi AI yöneticisi.
-Fatih ile Türkçe konuşursun. Müşteriler Bolivya İspanyolcası konuşur.
-
-KİMLİK:
-- JARVIS tarzı: sakin, zeki, kendinden emin, proaktif.
-- Fatih'e "sen" diye hitap edersin.
-- Kendinden üçüncü şahıs olarak bahsetmezsin.
-
-ÜSLUP:
-- Kısa konuş. En fazla 3-4 cümle.
-- Sade Türkçe. Süsleme yapma.
-- Şu kelimeleri KULLANMA: emisyon, yörünge, telemetry, mekanizma, entegre, optimum, sinerji, ekosistem, matris, parametre.
-
-İŞ BİLGİSİ:
-- Dropshipping. Tedarikçi: La Casa de Kadir.
-- Tedarikçi indirimi: %20 (liste × 0.80 = maliyet).
-- Aday fiyat A: liste × 1.20
-- Aday fiyat B: liste × 1.25
-- Minimum hedef kâr: liste fiyatının %20'si.
-- Kapıda ödeme (COD) aktif.
-- 500 Bs ve üzeri siparişte müşteriye kargo ÜCRETSİZ.
-- 500 Bs altı siparişte kargo 22,50 Bs (COD dahil).
-- Kargo: Correos Bolivia.
-- Shopify mağazası: veracasabolivia.myshopify.com
-
-ONAY SİSTEMİ:
-Onay SADECE şu işlemler için istenir:
-- Para harcama
-- Reklam başlatma / bütçe değiştirme
-- Ürün yayınlama (Shopify canlı)
-- Gerçek kargo oluşturma
-- Refund / iade
-- Tema değiştirme
-- Ücretli abonelik başlatma
-
-BİLGİ SORULARI İÇİN ONAY İSTEME. Bilgi soruları:
-- Fiyat/kargo hesaplama
-- Ürün listeleme
-- Genel sohbet
-- Durum sorusu
-
-Kritik işlem istendiğinde cevabın SONUNA ayrı satır olarak:
-[ONAY: kısa açıklama]
-
-Örnek:
-Kullanıcı: "Bu ürünü yayınla"
-Cevap: "Ürün hazır. Onayını bekliyorum.
-[ONAY: X ürününü Shopify'da yayınla]"
-
-DÜRÜSTLÜK:
-- Bilmediğin şeyi uydurma.
-- Yapmadığın işi "yaptım" diye anlatma.
-- Kargo/pazar/stok bilgilerini uydurma.
-
-YASAKLAR:
-- JSON gösterme.
-- Ham reasoning gösterme.
-- İngilizce teknik terim kullanma.`;
-
-// OpenAI uyumlu endpoint'e istek atan özel fetch fonksiyonu
-async function llmFetch(messages) {
-  const response = await fetch('/api/chat', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    // voiceloop tüm konuşma geçmişini messages dizisi olarak gönderir
-    // Bizim worker.js sadece son mesajı işliyor, bu yüzden son mesajı alıyoruz
-    body: JSON.stringify({ 
-      message: messages[messages.length - 1].content,
-      session_id: 'fatih'
-    })
-  });
-  
-  const data = await response.json();
-  
-  // OpenAI uyumlu formata dönüştür
-  return {
-    choices: [{
-      message: {
-        content: data.answer || data.error || 'Cevap alınamadı.'
-      }
-    }]
-  };
-}
-
 export const HTML = `<!DOCTYPE html>
 <html lang="tr">
 <head>
@@ -92,85 +5,37 @@ export const HTML = `<!DOCTYPE html>
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Vera Casa OS</title>
 <style>
-* { box-sizing: border-box; margin: 0; padding: 0; }
-body {
-  font-family: -apple-system, system-ui, sans-serif;
-  background: #0a0a0a; color: #eee;
-  min-height: 100vh; padding: 20px;
-  max-width: 600px; margin: 0 auto;
-}
-h1 { text-align: center; font-size: 28px; letter-spacing: 4px; margin: 20px 0 6px; }
-.sub { text-align: center; color: #888; font-size: 13px; margin-bottom: 30px; }
-.card {
-  background: #151515; border: 1px solid #262626;
-  border-radius: 16px; padding: 18px; margin-bottom: 16px;
-}
-.card h2 { font-size: 17px; margin-bottom: 6px; }
-.card p { color: #888; font-size: 13px; margin-bottom: 12px; }
-textarea {
-  width: 100%; background: #0a0a0a; border: 1px solid #262626;
-  border-radius: 12px; padding: 12px; color: #eee;
-  font-size: 15px; font-family: inherit; resize: none;
-}
-textarea:focus { outline: none; border-color: #555; }
-button {
-  background: #fff; color: #000; border: none;
-  border-radius: 12px; padding: 12px 20px;
-  font-size: 15px; font-weight: 600;
-  cursor: pointer; margin-top: 10px;
-}
-button:active { opacity: 0.7; }
-.btn-clear {
-  background: #2a2a2a; color: #aaa; font-size: 12px;
-  padding: 6px 12px; margin-left: 8px;
-}
-.btn-shopify {
-  background: #2d7a3e; color: #fff; font-size: 13px;
-  padding: 8px 14px; text-decoration: none;
-  border-radius: 8px; display: inline-block; margin-top: 6px;
-}
-.btn-mic {
-  background: #fff; color: #000; border-radius: 50%;
-  width: 60px; height: 60px; font-size: 24px;
-  display: flex; align-items: center; justify-content: center;
-  margin: 16px auto; cursor: pointer;
-  transition: all 0.2s;
-}
-.btn-mic.active {
-  background: #e74c3c; color: #fff;
-  animation: pulse 1.5s infinite;
-}
-@keyframes pulse {
-  0% { box-shadow: 0 0 0 0 rgba(231, 76, 60, 0.7); }
-  70% { box-shadow: 0 0 0 15px rgba(231, 76, 60, 0); }
-  100% { box-shadow: 0 0 0 0 rgba(231, 76, 60, 0); }
-}
-#answer {
-  margin-top: 16px; padding: 14px;
-  background: #0a0a0a; border: 1px solid #262626;
-  border-radius: 12px; min-height: 60px;
-  white-space: pre-wrap; font-size: 14px; line-height: 1.5;
-}
-.stats { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
-.stat {
-  background: #151515; border: 1px solid #262626;
-  border-radius: 14px; padding: 14px;
-}
-.stat .num { font-size: 22px; font-weight: 700; }
-.stat .lbl { font-size: 12px; color: #888; margin-top: 4px; }
-.approval-item {
-  background: #1a1200; border: 1px solid #4a3a00;
-  border-radius: 12px; padding: 14px; margin-bottom: 10px;
-}
-.approval-item .desc {
-  font-size: 14px; margin-bottom: 10px; line-height: 1.4;
-}
-.approval-item .actions { display: flex; gap: 8px; }
-.approval-item button {
-  padding: 8px 16px; font-size: 13px; margin: 0; flex: 1;
-}
-.btn-approve { background: #2d7a3e; color: #fff; }
-.btn-reject { background: #7a2d2d; color: #fff; }
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:-apple-system,system-ui,sans-serif;background:#0a0a0a;color:#eee;min-height:100vh;padding:20px;max-width:600px;margin:0 auto}
+h1{text-align:center;font-size:28px;letter-spacing:4px;margin:20px 0 6px}
+.sub{text-align:center;color:#888;font-size:13px;margin-bottom:30px}
+.card{background:#151515;border:1px solid #262626;border-radius:16px;padding:18px;margin-bottom:16px}
+.card h2{font-size:17px;margin-bottom:6px}
+.card p{color:#888;font-size:13px;margin-bottom:12px}
+textarea{width:100%;background:#0a0a0a;border:1px solid #262626;border-radius:12px;padding:12px;color:#eee;font-size:15px;font-family:inherit;resize:none;margin-top:12px}
+textarea:focus{outline:none;border-color:#555}
+button{background:#fff;color:#000;border:none;border-radius:12px;padding:12px 20px;font-size:15px;font-weight:600;cursor:pointer;margin-top:10px}
+button:active{opacity:.7}
+.btn-clear{background:#2a2a2a;color:#aaa;font-size:12px;padding:6px 12px;margin-left:8px}
+.btn-shopify{background:#2d7a3e;color:#fff;font-size:13px;padding:8px 14px;text-decoration:none;border-radius:8px;display:inline-block;margin-top:6px}
+.btn-mic{background:#fff;color:#000;border-radius:50%;width:70px;height:70px;font-size:28px;display:flex;align-items:center;justify-content:center;margin:16px auto;cursor:pointer;transition:all .2s;border:none;padding:0}
+.btn-mic.active{background:#e74c3c;color:#fff;animation:pulse 1.5s infinite}
+@keyframes pulse{0%{box-shadow:0 0 0 0 rgba(231,76,60,.7)}70%{box-shadow:0 0 0 20px rgba(231,76,60,0)}100%{box-shadow:0 0 0 0 rgba(231,76,60,0)}}
+#voiceStatus{text-align:center;font-size:12px;color:#888;margin-top:8px;min-height:18px}
+#answer{margin-top:16px;padding:14px;background:#0a0a0a;border:1px solid #262626;border-radius:12px;min-height:60px;white-space:pre-wrap;font-size:14px;line-height:1.5}
+.stats{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+.stat{background:#151515;border:1px solid #262626;border-radius:14px;padding:14px}
+.stat .num{font-size:22px;font-weight:700}
+.stat .lbl{font-size:12px;color:#888;margin-top:4px}
+.approval-item{background:#1a1200;border:1px solid #4a3a00;border-radius:12px;padding:14px;margin-bottom:10px}
+.approval-item .desc{font-size:14px;margin-bottom:10px;line-height:1.4}
+.approval-item .actions{display:flex;gap:8px}
+.approval-item button{padding:8px 16px;font-size:13px;margin:0;flex:1}
+.btn-approve{background:#2d7a3e;color:#fff}
+.btn-reject{background:#7a2d2d;color:#fff}
+.lang-toggle{display:flex;justify-content:center;gap:8px;margin-top:8px}
+.lang-btn{background:#1f1f1f;color:#888;border:1px solid #333;padding:6px 14px;border-radius:20px;font-size:12px;cursor:pointer}
+.lang-btn.active{background:#fff;color:#000;border-color:#fff}
 </style>
 </head>
 <body>
@@ -184,12 +49,13 @@ button:active { opacity: 0.7; }
 
 <div class="card">
   <h2>Vera'ya sor <button class="btn-clear" onclick="clearMemory()">Hafızayı sil</button></h2>
-  <p>İşletmeni yönet, kararları hazırla, kritik işlemleri onaya bırak.</p>
-  
-  <!-- Sesli asistan butonu -->
-  <button id="micButton" class="btn-mic" title="Mikrofona bas ve konuş">🎤</button>
-  <div id="voiceStatus" style="text-align:center; font-size:12px; color:#888; margin-top:4px;">Konuşmak için mikrofona bas</div>
-  
+  <p>Mikrofona bas, konuş. Vera cevap verecek.</p>
+  <button id="micButton" class="btn-mic" title="Konuşmak için bas">🎤</button>
+  <div id="voiceStatus">Konuşmak için mikrofona bas</div>
+  <div class="lang-toggle">
+    <button class="lang-btn active" id="langTR" onclick="setLang('tr-TR')">🇹🇷 Türkçe</button>
+    <button class="lang-btn" id="langES" onclick="setLang('es-BO')">🇧🇴 Español</button>
+  </div>
   <textarea id="msg" rows="3" placeholder="Örn: Bugün ne yapmamız gerekiyor?"></textarea>
   <button onclick="send()">Gönder</button>
   <div id="answer">Hazırım Fatih.</div>
@@ -208,205 +74,269 @@ button:active { opacity: 0.7; }
   <div class="stat"><div class="num" id="approval-count">0</div><div class="lbl">bekleyen onay</div></div>
 </div>
 
-<script type="module">
-import { VoiceAgent, unlockAudio } from '@todoforai/voiceloop';
+<script>
+var SESSION='fatih';
+var currentLang='tr-TR';
+var recognition=null;
+var isListening=false;
+var isSpeaking=false;
+var voiceEnabled=false;
 
-const SESSION = 'fatih';
-
-// --- Metin tabanlı sohbet (mevcut) ---
-async function send() {
-  const box = document.getElementById('answer');
-  const msg = document.getElementById('msg').value.trim();
-  if (!msg) return;
-  box.textContent = 'Vera düşünüyor...';
-  try {
-    const r = await fetch('/api/chat', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ message: msg, session_id: SESSION })
-    });
-    const data = await r.json();
-    box.textContent = data.ok ? data.answer : ('Hata: ' + data.error);
-    document.getElementById('msg').value = '';
-    loadApprovals();
-  } catch (e) {
-    box.textContent = 'Bağlantı hatası: ' + e.message;
-  }
+function send(){
+  var box=document.getElementById('answer');
+  var msg=document.getElementById('msg').value.trim();
+  if(!msg)return;
+  box.textContent='Vera düşünüyor...';
+  fetch('/api/chat',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({message:msg,session_id:SESSION})})
+    .then(function(r){return r.json()})
+    .then(function(data){
+      var answer=data.ok?data.answer:('Hata: '+data.error);
+      box.textContent=answer;
+      document.getElementById('msg').value='';
+      loadApprovals();
+      if(voiceEnabled&&data.ok)speak(answer);
+    })
+    .catch(function(e){box.textContent='Bağlantı hatası: '+e.message});
 }
 
-// --- Sesli asistan ---
-let agent = null;
+function speak(text){
+  if(!('speechSynthesis'in window))return;
+  window.speechSynthesis.cancel();
+  var clean=text.replace(/\[ONAY:[^\]]+\]/g,'').trim();
+  if(!clean)return;
+  var u=new SpeechSynthesisUtterance(clean);
+  u.lang=currentLang;
+  u.rate=1.05;
+  u.pitch=0.95;
+  var voices=window.speechSynthesis.getVoices();
+  var pref=voices.find(function(v){return v.lang.startsWith(currentLang.split('-')[0])});
+  if(pref)u.voice=pref;
+  isSpeaking=true;
+  u.onend=function(){isSpeaking=false;if(voiceEnabled&&!isListening)startListening()};
+  u.onerror=function(){isSpeaking=false};
+  window.speechSynthesis.speak(u);
+}
 
-async function initVoice() {
-  const micBtn = document.getElementById('micButton');
-  const statusEl = document.getElementById('voiceStatus');
+function initRecognition(){
+  var SR=window.SpeechRecognition||window.webkitSpeechRecognition;
+  if(!SR){
+    document.getElementById('voiceStatus').textContent='Bu tarayıcı ses tanımayı desteklemiyor. Chrome kullan.';
+    return null;
+  }
+  var rec=new SR();
+  rec.continuous=false;
+  rec.interimResults=true;
+  rec.lang=currentLang;
+  rec.onresult=function(event){
+    var interim='';
+    var final='';
+    for(var i=event.resultIndex;i<event.results.length;i++){
+      var t=event.results[i][0].transcript;
+      if(event.results[i].isFinal)final+=t;
+      else interim+=t;
+    }
+    var statusEl=document.getElementById('voiceStatus');
+    if(interim)statusEl.textContent='🎙️ '+interim;
+    if(final){
+      statusEl.textContent='👤 '+final;
+      handleVoiceInput(final.trim());
+    }
+  };
+  rec.onerror=function(event){
+    if(event.error==='not-allowed'){
+      document.getElementById('voiceStatus').textContent='Mikrofon izni verilmedi.';
+      voiceEnabled=false;
+      document.getElementById('micButton').classList.remove('active');
+    }else if(event.error==='no-speech'){
+      document.getElementById('voiceStatus').textContent='Ses duyulmadı, tekrar dene.';
+    }
+  };
+  rec.onend=function(){
+    isListening=false;
+    document.getElementById('micButton').classList.remove('active');
+  };
+  return rec;
+}
 
-  micBtn.addEventListener('click', async () => {
-    if (!agent) {
-      // İlk kez başlatılıyor
-      await unlockAudio(); // Tarayıcı ses iznini açar
-      
-      agent = new VoiceAgent({
-        llmUrl: '/api/chat', // Kullanılmayacak, özel fetch kullanacağız
-        model: 'llama-3.3-70b',
-        persona: SYSTEM_PROMPT,
-        // Özel fetch fonksiyonu ile worker.js'e bağlan
-        fetch: llmFetch,
-        onEvent: (e) => {
-          if (e.type === 'assistant') {
-            // Vera'nın söylediklerini ekranda göster
-            document.getElementById('answer').textContent = e.text;
-          }
-          if (e.type === 'user') {
-            // Kullanıcının söylediklerini göster (isteğe bağlı)
-            console.log('Kullanıcı:', e.text);
-          }
-          if (e.type === 'status') {
-            statusEl.textContent = e.text;
-          }
-        },
-      });
-      
-      await agent.start();
+function handleVoiceInput(text){
+  var box=document.getElementById('answer');
+  box.textContent='Vera düşünüyor...';
+  fetch('/api/chat',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({message:text,session_id:SESSION})})
+    .then(function(r){return r.json()})
+    .then(function(data){
+      var answer=data.ok?data.answer:('Hata: '+data.error);
+      box.textContent=answer;
+      loadApprovals();
+      if(data.ok)speak(answer);
+    })
+    .catch(function(e){box.textContent='Bağlantı hatası: '+e.message});
+}
+
+function startListening(){
+  if(!recognition||isListening||isSpeaking)return;
+  try{
+    recognition.lang=currentLang;
+    recognition.start();
+    isListening=true;
+    document.getElementById('micButton').classList.add('active');
+    document.getElementById('voiceStatus').textContent='🎙️ Dinliyorum...';
+  }catch(e){}
+}
+
+function stopListening(){
+  if(recognition&&isListening){
+    try{recognition.stop()}catch(e){}
+    isListening=false;
+  }
+  document.getElementById('micButton').classList.remove('active');
+}
+
+function setupMicButton(){
+  var micBtn=document.getElementById('micButton');
+  var statusEl=document.getElementById('voiceStatus');
+  micBtn.addEventListener('click',function(){
+    if(isSpeaking){
+      window.speechSynthesis.cancel();
+      isSpeaking=false;
+      statusEl.textContent='Susturuldu.';
+      return;
+    }
+    if(isListening){
+      stopListening();
+      statusEl.textContent='Dinleme durduruldu.';
+      return;
+    }
+    voiceEnabled=!voiceEnabled;
+    if(voiceEnabled){
       micBtn.classList.add('active');
-      statusEl.textContent = 'Dinliyorum... Konuşabilirsin.';
-    } else {
-      // Ajan çalışıyorsa durdur
-      agent.stop();
-      agent = null;
+      startListening();
+    }else{
       micBtn.classList.remove('active');
-      statusEl.textContent = 'Konuşmak için mikrofona bas';
+      statusEl.textContent='Sesli mod kapalı.';
+      window.speechSynthesis.cancel();
     }
   });
 }
 
-// --- Diğer mevcut fonksiyonlar ---
-async function loadApprovals() {
-  try {
-    const r = await fetch('/api/approvals?session_id=' + SESSION);
-    const data = await r.json();
-    const list = document.getElementById('approvals-list');
-    const card = document.getElementById('approvals-card');
-    const count = document.getElementById('approval-count');
-
-    if (!data.ok || !data.approvals || data.approvals.length === 0) {
-      card.style.display = 'none';
-      count.textContent = '0';
-      return;
-    }
-
-    card.style.display = 'block';
-    count.textContent = String(data.approvals.length);
-    list.innerHTML = '';
-
-    for (const a of data.approvals) {
-      const item = document.createElement('div');
-      item.className = 'approval-item';
-      item.innerHTML = '<div class="desc">' + escapeHtml(a.description) + '</div>' +
-        '<div class="actions">' +
-        '<button class="btn-approve" onclick="decide(\\'' + a.id + '\\', \\'approved\\')">✓ Onayla</button>' +
-        '<button class="btn-reject" onclick="decide(\\'' + a.id + '\\', \\'rejected\\')">✗ Reddet</button>' +
-        '</div>';
-      list.appendChild(item);
-    }
-  } catch (e) {}
+function setLang(lang){
+  currentLang=lang;
+  document.getElementById('langTR').classList.toggle('active',lang==='tr-TR');
+  document.getElementById('langES').classList.toggle('active',lang==='es-BO');
+  if(recognition)recognition.lang=lang;
+  document.getElementById('voiceStatus').textContent='Dil: '+(lang==='tr-TR'?'Türkçe':'Español');
 }
 
-async function loadShopify() {
-  try {
-    const r = await fetch('/api/shopify/status');
-    const data = await r.json();
-    const status = document.getElementById('shopify-status');
-    const actions = document.getElementById('shopify-actions');
-
-    if (data.connected) {
-      status.innerHTML = '✅ Bağlı — Mağaza: <b>' + escapeHtml(data.shop) + '</b>';
-      actions.innerHTML =
-        '<a class="btn-shopify" href="#" onclick="showProducts(); return false;">Ürünleri listele</a> ' +
-        '<button class="btn-clear" onclick="disconnectShopify()">Bağlantıyı kes</button>';
-    } else {
-      status.innerHTML = '❌ Henüz bağlı değil.';
-      actions.innerHTML = '<a class="btn-shopify" href="/api/shopify/install">Shopify\\'ı Bağla</a>';
-    }
-  } catch (e) {}
+function loadApprovals(){
+  fetch('/api/approvals?session_id='+SESSION)
+    .then(function(r){return r.json()})
+    .then(function(data){
+      var list=document.getElementById('approvals-list');
+      var card=document.getElementById('approvals-card');
+      var count=document.getElementById('approval-count');
+      if(!data.ok||!data.approvals||data.approvals.length===0){
+        card.style.display='none';
+        count.textContent='0';
+        return;
+      }
+      card.style.display='block';
+      count.textContent=String(data.approvals.length);
+      list.innerHTML='';
+      data.approvals.forEach(function(a){
+        var item=document.createElement('div');
+        item.className='approval-item';
+        item.innerHTML='<div class="desc">'+escapeHtml(a.description)+'</div>'+
+          '<div class="actions">'+
+          '<button class="btn-approve" onclick="decide(\\''+a.id+'\\',\\'approved\\')">✓ Onayla</button>'+
+          '<button class="btn-reject" onclick="decide(\\''+a.id+'\\',\\'rejected\\')">✗ Reddet</button>'+
+          '</div>';
+        list.appendChild(item);
+      });
+    })
+    .catch(function(){});
 }
 
-async function showProducts() {
-  const box = document.getElementById('answer');
-  box.textContent = 'Ürünler getiriliyor...';
-  try {
-    const r = await fetch('/api/shopify/products');
-    const data = await r.json();
-    if (!data.ok) {
-      box.textContent = 'Hata: ' + data.error;
-      return;
-    }
-    if (data.count === 0) {
-      box.textContent = 'Mağazada henüz ürün yok.';
-      return;
-    }
-    let txt = '📦 ' + data.count + ' ürün:\\n\\n';
-    for (const p of data.products.slice(0, 10)) {
-      txt += '• ' + p.title + ' — ' + (p.variants?.[0]?.price || '?') + ' BOB\\n';
-    }
-    box.textContent = txt;
-  } catch (e) {
-    box.textContent = 'Hata: ' + e.message;
-  }
+function decide(id,decision){
+  fetch('/api/approvals/decide',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({id:id,decision:decision})})
+    .then(function(r){return r.json()})
+    .then(function(data){if(data.ok)loadApprovals();else alert('Hata: '+data.error)})
+    .catch(function(e){alert('Bağlantı hatası: '+e.message)});
 }
 
-async function disconnectShopify() {
-  if (!confirm('Shopify bağlantısı kesilsin mi?')) return;
-  await fetch('/api/shopify/disconnect', { method: 'POST' });
+function loadShopify(){
+  fetch('/api/shopify/status')
+    .then(function(r){return r.json()})
+    .then(function(data){
+      var status=document.getElementById('shopify-status');
+      var actions=document.getElementById('shopify-actions');
+      if(data.connected){
+        status.innerHTML='✅ Bağlı — Mağaza: <b>'+escapeHtml(data.shop)+'</b>';
+        actions.innerHTML='<a class="btn-shopify" href="#" onclick="showProducts();return false;">Ürünleri listele</a> '+
+          '<button class="btn-clear" onclick="disconnectShopify()">Bağlantıyı kes</button>';
+      }else{
+        status.innerHTML='❌ Henüz bağlı değil.';
+        actions.innerHTML='<a class="btn-shopify" href="/api/shopify/install">Shopify\\'ı Bağla</a>';
+      }
+    })
+    .catch(function(){});
+}
+
+function showProducts(){
+  var box=document.getElementById('answer');
+  box.textContent='Ürünler getiriliyor...';
+  fetch('/api/shopify/products')
+    .then(function(r){return r.json()})
+    .then(function(data){
+      if(!data.ok){box.textContent='Hata: '+data.error;return}
+      if(data.count===0){box.textContent='Mağazada henüz ürün yok.';return}
+      var txt='📦 '+data.count+' ürün:\\n\\n';
+      data.products.slice(0,10).forEach(function(p){
+        txt+='• '+p.title+' — '+(p.variants&&p.variants[0]?p.variants[0].price:'?')+' BOB\\n';
+      });
+      box.textContent=txt;
+    })
+    .catch(function(e){box.textContent='Hata: '+e.message});
+}
+
+function disconnectShopify(){
+  if(!confirm('Shopify bağlantısı kesilsin mi?'))return;
+  fetch('/api/shopify/disconnect',{method:'POST'}).then(function(){loadShopify()});
+}
+
+function clearMemory(){
+  if(!confirm('Hafıza ve onaylar silinsin mi?'))return;
+  fetch('/api/memory/clear',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({session_id:SESSION})})
+    .then(function(r){return r.json()})
+    .then(function(data){
+      document.getElementById('answer').textContent=data.ok?'Hafıza silindi.':'Hata: '+data.error;
+      loadApprovals();
+    })
+    .catch(function(){});
+}
+
+function escapeHtml(s){
+  return String(s).replace(/[&<>"']/g,function(c){
+    return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c];
+  });
+}
+
+if(window.location.search.indexOf('shopify=connected')>-1){
+  document.getElementById('answer').textContent='Shopify bağlandı!';
+  window.history.replaceState({},'','/');
+}
+
+window.addEventListener('DOMContentLoaded',function(){
+  recognition=initRecognition();
+  setupMicButton();
+  loadApprovals();
   loadShopify();
+  setInterval(loadApprovals,30000);
+  setInterval(loadShopify,60000);
+});
+
+if('speechSynthesis'in window){
+  window.speechSynthesis.getVoices();
+  window.speechSynthesis.onvoiceschanged=function(){window.speechSynthesis.getVoices()};
 }
-
-async function decide(id, decision) {
-  try {
-    const r = await fetch('/api/approvals/decide', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ id, decision })
-    });
-    const data = await r.json();
-    if (data.ok) loadApprovals();
-    else alert('Hata: ' + data.error);
-  } catch (e) {
-    alert('Bağlantı hatası: ' + e.message);
-  }
-}
-
-async function clearMemory() {
-  if (!confirm('Hafıza ve onaylar silinsin mi?')) return;
-  try {
-    const r = await fetch('/api/memory/clear', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ session_id: SESSION })
-    });
-    const data = await r.json();
-    document.getElementById('answer').textContent = data.ok ? 'Hafıza silindi.' : 'Hata: ' + data.error;
-    loadApprovals();
-  } catch (e) {}
-}
-
-function escapeHtml(s) {
-  return String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
-}
-
-if (window.location.search.includes('shopify=connected')) {
-  document.getElementById('answer').textContent = 'Shopify bağlandı!';
-  window.history.replaceState({}, '', '/');
-}
-
-// Sayfa yüklendiğinde çalışacaklar
-loadApprovals();
-loadShopify();
-setInterval(loadApprovals, 30000);
-setInterval(loadShopify, 60000);
-
-// Sesli asistanı başlat
-initVoice();
 </script>
 </body>
 </html>`;
