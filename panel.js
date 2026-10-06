@@ -1,3 +1,90 @@
+import { VoiceAgent, unlockAudio } from '@todoforai/voiceloop';
+
+// Mevcut sistem prompt'unuzu buraya taşıyın (veya worker.js'ten çekin)
+const SYSTEM_PROMPT = `Sen Vera'sın — Vera Casa Bolivia'nın merkezi AI yöneticisi.
+Fatih ile Türkçe konuşursun. Müşteriler Bolivya İspanyolcası konuşur.
+
+KİMLİK:
+- JARVIS tarzı: sakin, zeki, kendinden emin, proaktif.
+- Fatih'e "sen" diye hitap edersin.
+- Kendinden üçüncü şahıs olarak bahsetmezsin.
+
+ÜSLUP:
+- Kısa konuş. En fazla 3-4 cümle.
+- Sade Türkçe. Süsleme yapma.
+- Şu kelimeleri KULLANMA: emisyon, yörünge, telemetry, mekanizma, entegre, optimum, sinerji, ekosistem, matris, parametre.
+
+İŞ BİLGİSİ:
+- Dropshipping. Tedarikçi: La Casa de Kadir.
+- Tedarikçi indirimi: %20 (liste × 0.80 = maliyet).
+- Aday fiyat A: liste × 1.20
+- Aday fiyat B: liste × 1.25
+- Minimum hedef kâr: liste fiyatının %20'si.
+- Kapıda ödeme (COD) aktif.
+- 500 Bs ve üzeri siparişte müşteriye kargo ÜCRETSİZ.
+- 500 Bs altı siparişte kargo 22,50 Bs (COD dahil).
+- Kargo: Correos Bolivia.
+- Shopify mağazası: veracasabolivia.myshopify.com
+
+ONAY SİSTEMİ:
+Onay SADECE şu işlemler için istenir:
+- Para harcama
+- Reklam başlatma / bütçe değiştirme
+- Ürün yayınlama (Shopify canlı)
+- Gerçek kargo oluşturma
+- Refund / iade
+- Tema değiştirme
+- Ücretli abonelik başlatma
+
+BİLGİ SORULARI İÇİN ONAY İSTEME. Bilgi soruları:
+- Fiyat/kargo hesaplama
+- Ürün listeleme
+- Genel sohbet
+- Durum sorusu
+
+Kritik işlem istendiğinde cevabın SONUNA ayrı satır olarak:
+[ONAY: kısa açıklama]
+
+Örnek:
+Kullanıcı: "Bu ürünü yayınla"
+Cevap: "Ürün hazır. Onayını bekliyorum.
+[ONAY: X ürününü Shopify'da yayınla]"
+
+DÜRÜSTLÜK:
+- Bilmediğin şeyi uydurma.
+- Yapmadığın işi "yaptım" diye anlatma.
+- Kargo/pazar/stok bilgilerini uydurma.
+
+YASAKLAR:
+- JSON gösterme.
+- Ham reasoning gösterme.
+- İngilizce teknik terim kullanma.`;
+
+// OpenAI uyumlu endpoint'e istek atan özel fetch fonksiyonu
+async function llmFetch(messages) {
+  const response = await fetch('/api/chat', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    // voiceloop tüm konuşma geçmişini messages dizisi olarak gönderir
+    // Bizim worker.js sadece son mesajı işliyor, bu yüzden son mesajı alıyoruz
+    body: JSON.stringify({ 
+      message: messages[messages.length - 1].content,
+      session_id: 'fatih'
+    })
+  });
+  
+  const data = await response.json();
+  
+  // OpenAI uyumlu formata dönüştür
+  return {
+    choices: [{
+      message: {
+        content: data.answer || data.error || 'Cevap alınamadı.'
+      }
+    }]
+  };
+}
+
 export const HTML = `<!DOCTYPE html>
 <html lang="tr">
 <head>
@@ -42,6 +129,22 @@ button:active { opacity: 0.7; }
   padding: 8px 14px; text-decoration: none;
   border-radius: 8px; display: inline-block; margin-top: 6px;
 }
+.btn-mic {
+  background: #fff; color: #000; border-radius: 50%;
+  width: 60px; height: 60px; font-size: 24px;
+  display: flex; align-items: center; justify-content: center;
+  margin: 16px auto; cursor: pointer;
+  transition: all 0.2s;
+}
+.btn-mic.active {
+  background: #e74c3c; color: #fff;
+  animation: pulse 1.5s infinite;
+}
+@keyframes pulse {
+  0% { box-shadow: 0 0 0 0 rgba(231, 76, 60, 0.7); }
+  70% { box-shadow: 0 0 0 15px rgba(231, 76, 60, 0); }
+  100% { box-shadow: 0 0 0 0 rgba(231, 76, 60, 0); }
+}
 #answer {
   margin-top: 16px; padding: 14px;
   background: #0a0a0a; border: 1px solid #262626;
@@ -82,6 +185,11 @@ button:active { opacity: 0.7; }
 <div class="card">
   <h2>Vera'ya sor <button class="btn-clear" onclick="clearMemory()">Hafızayı sil</button></h2>
   <p>İşletmeni yönet, kararları hazırla, kritik işlemleri onaya bırak.</p>
+  
+  <!-- Sesli asistan butonu -->
+  <button id="micButton" class="btn-mic" title="Mikrofona bas ve konuş">🎤</button>
+  <div id="voiceStatus" style="text-align:center; font-size:12px; color:#888; margin-top:4px;">Konuşmak için mikrofona bas</div>
+  
   <textarea id="msg" rows="3" placeholder="Örn: Bugün ne yapmamız gerekiyor?"></textarea>
   <button onclick="send()">Gönder</button>
   <div id="answer">Hazırım Fatih.</div>
@@ -100,9 +208,12 @@ button:active { opacity: 0.7; }
   <div class="stat"><div class="num" id="approval-count">0</div><div class="lbl">bekleyen onay</div></div>
 </div>
 
-<script>
+<script type="module">
+import { VoiceAgent, unlockAudio } from '@todoforai/voiceloop';
+
 const SESSION = 'fatih';
 
+// --- Metin tabanlı sohbet (mevcut) ---
 async function send() {
   const box = document.getElementById('answer');
   const msg = document.getElementById('msg').value.trim();
@@ -123,6 +234,53 @@ async function send() {
   }
 }
 
+// --- Sesli asistan ---
+let agent = null;
+
+async function initVoice() {
+  const micBtn = document.getElementById('micButton');
+  const statusEl = document.getElementById('voiceStatus');
+
+  micBtn.addEventListener('click', async () => {
+    if (!agent) {
+      // İlk kez başlatılıyor
+      await unlockAudio(); // Tarayıcı ses iznini açar
+      
+      agent = new VoiceAgent({
+        llmUrl: '/api/chat', // Kullanılmayacak, özel fetch kullanacağız
+        model: 'llama-3.3-70b',
+        persona: SYSTEM_PROMPT,
+        // Özel fetch fonksiyonu ile worker.js'e bağlan
+        fetch: llmFetch,
+        onEvent: (e) => {
+          if (e.type === 'assistant') {
+            // Vera'nın söylediklerini ekranda göster
+            document.getElementById('answer').textContent = e.text;
+          }
+          if (e.type === 'user') {
+            // Kullanıcının söylediklerini göster (isteğe bağlı)
+            console.log('Kullanıcı:', e.text);
+          }
+          if (e.type === 'status') {
+            statusEl.textContent = e.text;
+          }
+        },
+      });
+      
+      await agent.start();
+      micBtn.classList.add('active');
+      statusEl.textContent = 'Dinliyorum... Konuşabilirsin.';
+    } else {
+      // Ajan çalışıyorsa durdur
+      agent.stop();
+      agent = null;
+      micBtn.classList.remove('active');
+      statusEl.textContent = 'Konuşmak için mikrofona bas';
+    }
+  });
+}
+
+// --- Diğer mevcut fonksiyonlar ---
 async function loadApprovals() {
   try {
     const r = await fetch('/api/approvals?session_id=' + SESSION);
@@ -241,10 +399,14 @@ if (window.location.search.includes('shopify=connected')) {
   window.history.replaceState({}, '', '/');
 }
 
+// Sayfa yüklendiğinde çalışacaklar
 loadApprovals();
 loadShopify();
 setInterval(loadApprovals, 30000);
 setInterval(loadShopify, 60000);
+
+// Sesli asistanı başlat
+initVoice();
 </script>
 </body>
 </html>`;
