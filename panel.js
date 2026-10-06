@@ -81,6 +81,7 @@ var recognition=null;
 var isListening=false;
 var isSpeaking=false;
 var voiceEnabled=false;
+var cachedVoice=null;
 
 function send(){
   var box=document.getElementById('answer');
@@ -99,24 +100,128 @@ function send(){
     .catch(function(e){box.textContent='Bağlantı hatası: '+e.message});
 }
 
+// ============ SES SEÇİMİ ============
+function pickBestVoice(langCode){
+  var voices=window.speechSynthesis.getVoices();
+  if(!voices||voices.length===0)return null;
+  var langPrefix=langCode.split('-')[0].toLowerCase();
+  var candidates=voices.filter(function(v){
+    return v.lang&&v.lang.toLowerCase().indexOf(langPrefix)===0;
+  });
+  if(candidates.length===0)return null;
+
+  // Öncelik sırası: doğal/neural/google sesler önce
+  var priorities=['natural','neural','google','premium','enhanced','online','microsoft'];
+  for(var i=0;i<priorities.length;i++){
+    var key=priorities[i];
+    var found=candidates.filter(function(v){
+      return v.name&&v.name.toLowerCase().indexOf(key)>-1;
+    })[0];
+    if(found)return found;
+  }
+
+  // Bulut tabanlı ses (localService=false) genelde daha doğal
+  var cloud=candidates.filter(function(v){return v.localService===false})[0];
+  if(cloud)return cloud;
+
+  return candidates[0];
+}
+
+function refreshVoice(){
+  cachedVoice=pickBestVoice(currentLang);
+}
+
+// ============ METİN ÖN İŞLEME ============
+function preprocessText(text){
+  var t=text;
+  // [ONAY: ...] marker'larını sil
+  t=t.replace(/\[ONAY:[^\]]+\]/g,'');
+  // Markdown yıldızları, alt çizgiler
+  t=t.replace(/\*\*/g,'').replace(/\*/g,'').replace(/__/g,'').replace(/_/g,' ');
+  // Başlık işaretleri
+  t=t.replace(/^#+\s*/gm,'');
+  // Markdown link: [metin](url) → metin
+  t=t.replace(/\[([^\]]+)\]\([^)]+\)/g,'$1');
+  // Emoji ve semboller
+  try{t=t.replace(/[\u{1F300}-\u{1FAFF}\u{2600}-\u{27BF}\u{2190}-\u{21FF}\u{2B00}-\u{2BFF}\u{FE0F}]/gu,'');}catch(e){}
+  // Kısaltmalar
+  t=t.replace(/\bBs\b/g,'bolivyano');
+  t=t.replace(/\bBOB\b/g,'bolivyano');
+  t=t.replace(/\bCOD\b/g,'kapıda ödeme');
+  t=t.replace(/\bURL\b/g,'link');
+  t=t.replace(/\bAPI\b/g,'A P İ');
+  // Sayı formatı: 372,50 → 372.50 (Türkçe sesler için)
+  t=t.replace(/(\d),(\d)/g,'$1.$2');
+  // Fazla boşluk ve satır
+  t=t.replace(/\s+/g,' ').trim();
+  return t;
+}
+
+// ============ CÜMLE BÖLME ============
+function splitIntoSentences(text){
+  if(!text)return [];
+  var result=[];
+  // Cümle sonu noktalaması + boşluk ile böl
+  var regex=/[^.!?…]+[.!?…]+/g;
+  var matches=text.match(regex);
+  if(matches){
+    matches.forEach(function(m){
+      var t=m.trim();
+      if(t)result.push(t);
+    });
+  }
+  // Son parça (noktalama olmadan biten metin)
+  var lastMatch=matches?matches[matches.length-1]:'';
+  if(lastMatch){
+    var lastIdx=text.lastIndexOf(lastMatch)+lastMatch.length;
+    var remainder=text.substring(lastIdx).trim();
+    if(remainder)result.push(remainder);
+  }else if(text.trim()){
+    result.push(text.trim());
+  }
+  return result.length>0?result:[text.trim()];
+}
+
+// ============ SESLİ OKUMA (TTS) ============
 function speak(text){
   if(!('speechSynthesis'in window))return;
   window.speechSynthesis.cancel();
-  var clean=text.replace(/\[ONAY:[^\]]+\]/g,'').trim();
+
+  var clean=preprocessText(text);
   if(!clean)return;
-  var u=new SpeechSynthesisUtterance(clean);
-  u.lang=currentLang;
-  u.rate=1.05;
-  u.pitch=0.95;
-  var voices=window.speechSynthesis.getVoices();
-  var pref=voices.find(function(v){return v.lang.startsWith(currentLang.split('-')[0])});
-  if(pref)u.voice=pref;
+
+  var sentences=splitIntoSentences(clean);
+  if(sentences.length===0)return;
+
+  // Ses önbelleği boşsa yenile
+  if(!cachedVoice)refreshVoice();
+
   isSpeaking=true;
-  u.onend=function(){isSpeaking=false;if(voiceEnabled&&!isListening)startListening()};
-  u.onerror=function(){isSpeaking=false};
-  window.speechSynthesis.speak(u);
+  var lastIdx=sentences.length-1;
+
+  sentences.forEach(function(sentence,idx){
+    var u=new SpeechSynthesisUtterance(sentence);
+    u.lang=currentLang;
+    u.rate=0.97;      // İnsan konuşma hızına yakın
+    u.pitch=1.0;      // Doğal ton
+    u.volume=1.0;
+    if(cachedVoice)u.voice=cachedVoice;
+
+    if(idx===lastIdx){
+      u.onend=function(){
+        isSpeaking=false;
+        if(voiceEnabled&&!isListening){
+          setTimeout(startListening,200);
+        }
+      };
+    }
+    u.onerror=function(){isSpeaking=false};
+
+    window.speechSynthesis.speak(u);
+  });
 }
 
+// ============ SESLİ DİNLEME (STT) ============
 function initRecognition(){
   var SR=window.SpeechRecognition||window.webkitSpeechRecognition;
   if(!SR){
@@ -223,7 +328,10 @@ function setLang(lang){
   document.getElementById('langTR').classList.toggle('active',lang==='tr-TR');
   document.getElementById('langES').classList.toggle('active',lang==='es-BO');
   if(recognition)recognition.lang=lang;
-  document.getElementById('voiceStatus').textContent='Dil: '+(lang==='tr-TR'?'Türkçe':'Español');
+  cachedVoice=null;
+  refreshVoice();
+  var voiceName=cachedVoice?cachedVoice.name:'(varsayılan)';
+  document.getElementById('voiceStatus').textContent='Dil: '+(lang==='tr-TR'?'Türkçe':'Español')+' — Ses: '+voiceName;
 }
 
 function loadApprovals(){
@@ -331,12 +439,18 @@ window.addEventListener('DOMContentLoaded',function(){
   loadShopify();
   setInterval(loadApprovals,30000);
   setInterval(loadShopify,60000);
-});
 
-if('speechSynthesis'in window){
-  window.speechSynthesis.getVoices();
-  window.speechSynthesis.onvoiceschanged=function(){window.speechSynthesis.getVoices()};
-}
+  // Ses listesini yükle
+  if('speechSynthesis'in window){
+    window.speechSynthesis.getVoices();
+    window.speechSynthesis.onvoiceschanged=function(){
+      window.speechSynthesis.getVoices();
+      refreshVoice();
+    };
+    setTimeout(refreshVoice,500);
+    setTimeout(refreshVoice,1500);
+  }
+});
 </script>
 </body>
 </html>`;
