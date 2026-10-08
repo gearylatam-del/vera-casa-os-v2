@@ -36,11 +36,13 @@ button:active{opacity:.7}
 .lang-toggle{display:flex;justify-content:center;gap:8px;margin-top:8px}
 .lang-btn{background:#1f1f1f;color:#888;border:1px solid #333;padding:6px 14px;border-radius:20px;font-size:12px;cursor:pointer}
 .lang-btn.active{background:#fff;color:#000;border-color:#fff}
+.lock-badge{text-align:center;font-size:11px;color:#555;margin-bottom:14px}
 </style>
 </head>
 <body>
 <h1>VERA</h1>
 <div class="sub">Vera Casa Operating System</div>
+<div class="lock-badge" id="lockBadge">🔒 Korumalı erişim</div>
 
 <div class="card" id="approvals-card" style="display:none">
   <h2>⏳ Onay bekleyen işlemler</h2>
@@ -48,7 +50,7 @@ button:active{opacity:.7}
 </div>
 
 <div class="card">
-  <h2>Vera'ya sor <button class="btn-clear" onclick="clearMemory()">Hafızayı sil</button></h2>
+  <h2>Vera'ya sor <button class="btn-clear" onclick="clearMemory()">Hafızayı sil</button><button class="btn-clear" onclick="resetToken()">🔒 Şifre</button></h2>
   <p>Mikrofona bas, konuş. Vera cevap verecek.</p>
   <button id="micButton" class="btn-mic" title="Konuşmak için bas">🎤</button>
   <div id="voiceStatus">Konuşmak için mikrofona bas</div>
@@ -75,6 +77,60 @@ button:active{opacity:.7}
 </div>
 
 <script>
+// ============================================================
+// ERİŞİM KORUMASI
+// Panel artık şifresiz çalışmaz. Şifre bir kez sorulur ve
+// telefonda hatırlanır. Hiçbir URL'de görünmez; her istek
+// X-Vera-Token başlığıyla gönderilir.
+// ============================================================
+var TOKEN_KEY='vera_token';
+var TOKEN=localStorage.getItem(TOKEN_KEY)||'';
+var nativeFetch=window.fetch.bind(window);
+
+function askToken(force){
+  if(TOKEN&&!force)return TOKEN;
+  var t=window.prompt('Vera Casa erişim şifresi:','');
+  t=(t||'').trim();
+  if(t){TOKEN=t;localStorage.setItem(TOKEN_KEY,t);}
+  return TOKEN;
+}
+askToken(false);
+
+function resetToken(){
+  localStorage.removeItem(TOKEN_KEY);
+  TOKEN='';
+  if(askToken(true)){
+    document.getElementById('answer').textContent='Şifre güncellendi.';
+    loadApprovals();
+    loadShopify();
+  }
+}
+
+// Tüm isteklere şifreyi otomatik ekle.
+window.fetch=function(input,init){
+  init=init||{};
+  var headers=new Headers(init.headers||{});
+  if(TOKEN)headers.set('X-Vera-Token',TOKEN);
+  init.headers=headers;
+  return nativeFetch(input,init).then(function(res){
+    if(res.status===401){
+      // Sadece elde geçersiz bir şifre varsa yenile.
+      // Şifre hiç yoksa yenilemeyiz — sonsuz döngü olmasın.
+      if(TOKEN){
+        localStorage.removeItem(TOKEN_KEY);
+        TOKEN='';
+        var box=document.getElementById('answer');
+        if(box)box.textContent='Şifre geçersiz. Yeniden giriliyor...';
+        setTimeout(function(){window.location.reload()},1200);
+      }
+    }else if(res.status===503){
+      var box2=document.getElementById('answer');
+      if(box2)box2.textContent='Sunucuda VERA_TOKEN tanımlı değil. Cloudflare gizli değerini ekle.';
+    }
+    return res;
+  });
+};
+
 var SESSION='fatih';
 var currentLang='tr-TR';
 var recognition=null;
@@ -91,7 +147,7 @@ function send(){
   fetch('/api/chat',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({message:msg,session_id:SESSION})})
     .then(function(r){return r.json()})
     .then(function(data){
-      var answer=data.ok?data.answer:('Hata: '+data.error);
+      var answer=data.ok?data.answer:('Hata: '+(data.message||data.error));
       box.textContent=answer;
       document.getElementById('msg').value='';
       loadApprovals();
@@ -231,7 +287,7 @@ function handleVoiceInput(text){
   fetch('/api/chat',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({message:text,session_id:SESSION})})
     .then(function(r){return r.json()})
     .then(function(data){
-      var answer=data.ok?data.answer:('Hata: '+data.error);
+      var answer=data.ok?data.answer:('Hata: '+(data.message||data.error));
       box.textContent=answer;
       loadApprovals();
       if(data.ok)speak(answer);
@@ -340,7 +396,7 @@ function loadApprovals(){
 function decide(id,decision){
   fetch('/api/approvals/decide',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({id:id,decision:decision})})
     .then(function(r){return r.json()})
-    .then(function(data){if(data.ok)loadApprovals();else alert('Hata: '+data.error)})
+    .then(function(data){if(data.ok)loadApprovals();else alert('Hata: '+(data.message||data.error))})
     .catch(function(e){alert('Bağlantı hatası: '+e.message)});
 }
 
@@ -366,10 +422,32 @@ function loadShopify(){
         actions.appendChild(b1);
       }else{
         status.textContent='❌ Henüz bağlı değil.';
-        actions.innerHTML='<a class="btn-shopify" href="/api/shopify/install">Shopify\'ı Bağla</a>';
+        actions.innerHTML='';
+        var bConnect=document.createElement('button');
+        bConnect.className='btn-shopify';
+        bConnect.textContent="Shopify'ı Bağla";
+        bConnect.onclick=connectShopify;
+        actions.appendChild(bConnect);
       }
     })
     .catch(function(){});
+}
+
+// Şifre URL'de görünmesin diye bağlantı adresi önce JSON olarak
+// alınır, sonra tarayıcı o adrese gider.
+function connectShopify(){
+  var box=document.getElementById('answer');
+  box.textContent='Shopify bağlantısı başlatılıyor...';
+  fetch('/api/shopify/install?format=json')
+    .then(function(r){return r.json()})
+    .then(function(data){
+      if(data&&data.ok&&data.auth_url){
+        window.location.href=data.auth_url;
+      }else{
+        box.textContent='Hata: '+((data&&(data.message||data.error))||'bilinmeyen');
+      }
+    })
+    .catch(function(e){box.textContent='Bağlantı hatası: '+e.message});
 }
 
 function showProducts(){
@@ -378,7 +456,7 @@ function showProducts(){
   fetch('/api/shopify/products')
     .then(function(r){return r.json()})
     .then(function(data){
-      if(!data.ok){box.textContent='Hata: '+data.error;return}
+      if(!data.ok){box.textContent='Hata: '+(data.message||data.error);return}
       if(data.count===0){box.textContent='Mağazada henüz ürün yok.';return}
       var txt='📦 '+data.count+' ürün:\n\n';
       data.products.slice(0,10).forEach(function(p){
@@ -400,7 +478,7 @@ function clearMemory(){
   fetch('/api/memory/clear',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({session_id:SESSION})})
     .then(function(r){return r.json()})
     .then(function(data){
-      document.getElementById('answer').textContent=data.ok?'Hafıza silindi.':'Hata: '+data.error;
+      document.getElementById('answer').textContent=data.ok?'Hafıza silindi.':'Hata: '+(data.message||data.error);
       loadApprovals();
     })
     .catch(function(){});
