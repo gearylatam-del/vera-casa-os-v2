@@ -37,6 +37,12 @@ button:active{opacity:.7}
 .lang-btn{background:#1f1f1f;color:#888;border:1px solid #333;padding:6px 14px;border-radius:20px;font-size:12px;cursor:pointer}
 .lang-btn.active{background:#fff;color:#000;border-color:#fff}
 .lock-badge{text-align:center;font-size:11px;color:#555;margin-bottom:14px}
+.pf-input{width:100%;background:#0a0a0a;border:1px solid #262626;border-radius:10px;padding:10px;color:#eee;font-size:14px;margin-top:8px;font-family:inherit}
+.video-script{background:#0a0a0a;border:1px solid #262626;border-radius:12px;padding:12px;margin-bottom:10px;white-space:pre-wrap;font-size:14px;line-height:1.5;word-break:break-word}
+.video-script .lbl{font-size:11px;color:#888;text-transform:uppercase;letter-spacing:1px;margin-bottom:8px;display:block}
+.sb-scene{background:#101010;border:1px solid #262626;border-radius:10px;padding:10px;margin-bottom:8px;font-size:13px}
+.sb-scene .t{color:#ffd766;font-weight:700}
+.hashtag{display:inline-block;background:#1f1f1f;color:#7cc4ff;border-radius:20px;padding:4px 10px;font-size:12px;margin:3px 4px 3px 0}
 </style>
 </head>
 <body>
@@ -67,6 +73,37 @@ button:active{opacity:.7}
   <h2>🛍️ Shopify</h2>
   <p id="shopify-status">Kontrol ediliyor...</p>
   <div id="shopify-actions"></div>
+</div>
+
+<div class="card" id="video-card">
+  <h2>🎬 Video Asistanı</h2>
+  <p>Ürün fotoğrafı yükle, Vera analiz edip satış videosu senaryosu üretsin.</p>
+  <input type="file" id="videoImageInput" accept="image/*" style="display:none" onchange="handleVideoImage(this.files[0])">
+  <button id="videoPickBtn" onclick="document.getElementById('videoImageInput').click()">📷 Fotoğraf seç</button>
+  <div id="videoPreviewWrap" style="display:none;margin:10px 0">
+    <img id="videoPreview" style="max-width:100%;max-height:260px;border-radius:10px;border:1px solid #262626" alt="önizleme">
+  </div>
+  <div style="margin-top:10px">
+    <label style="font-size:12px;color:#888">Liste fiyatı (Bs) — tedarikçi liste fiyatı</label>
+    <input type="number" id="videoPrice" inputmode="decimal" placeholder="Örn: 90" style="width:100%;background:#0a0a0a;border:1px solid #262626;border-radius:10px;padding:10px;color:#eee;font-size:15px;margin-top:4px">
+  </div>
+  <button id="videoAnalyzeBtn" onclick="analyzeImage()" style="background:#2d7a3e;color:#fff;width:100%">🔍 Analiz et</button>
+  <div id="videoAnalyzeStatus" style="font-size:12px;color:#888;margin-top:8px;min-height:16px"></div>
+
+  <div id="productForm" style="display:none;margin-top:10px">
+    <input type="text" id="pf_name" placeholder="Ürün adı" class="pf-input">
+    <input type="text" id="pf_category" placeholder="Kategori" class="pf-input">
+    <div style="display:flex;gap:8px">
+      <input type="text" id="pf_color" placeholder="Renk" class="pf-input" style="flex:1">
+      <input type="text" id="pf_material" placeholder="Malzeme" class="pf-input" style="flex:1">
+    </div>
+    <input type="text" id="pf_size" placeholder="Boyutlar" class="pf-input">
+    <textarea id="pf_features" rows="3" placeholder="Özellikler (virgülle ayır)"></textarea>
+    <input type="text" id="pf_audience" placeholder="Hedef kitle" class="pf-input">
+    <button id="videoGenBtn" onclick="generateScript()" style="background:#2d7a3e;color:#fff;width:100%">🎬 Senaryo üret</button>
+  </div>
+
+  <div id="videoResult" style="display:none;margin-top:14px"></div>
 </div>
 
 <div class="stats">
@@ -493,6 +530,123 @@ function escapeHtml(s){
 if(window.location.search.indexOf('shopify=connected')>-1){
   document.getElementById('answer').textContent='Shopify bağlandı!';
   window.history.replaceState({},'','/');
+}
+
+// ============================================================
+// VİDEO ASİSTANI
+// ============================================================
+var videoImageDataUrl='';
+
+function resizeImage(file,maxDim,quality,cb){
+  var reader=new FileReader();
+  reader.onload=function(e){
+    var img=new Image();
+    img.onload=function(){
+      var scale=Math.min(1,maxDim/Math.max(img.width,img.height));
+      var w=Math.round(img.width*scale);
+      var h=Math.round(img.height*scale);
+      var canvas=document.createElement('canvas');
+      canvas.width=w;canvas.height=h;
+      var ctx=canvas.getContext('2d');
+      ctx.drawImage(img,0,0,w,h);
+      cb(canvas.toDataURL('image/jpeg',quality));
+    };
+    img.onerror=function(){cb(null)};
+    img.src=e.target.result;
+  };
+  reader.onerror=function(){cb(null)};
+  reader.readAsDataURL(file);
+}
+
+function handleVideoImage(file){
+  if(!file)return;
+  var status=document.getElementById('videoAnalyzeStatus');
+  status.textContent='Fotoğraf hazırlanıyor...';
+  resizeImage(file,1024,0.85,function(dataUrl){
+    if(!dataUrl){status.textContent='Fotoğraf okunamadı.';return;}
+    videoImageDataUrl=dataUrl;
+    document.getElementById('videoPreview').src=dataUrl;
+    document.getElementById('videoPreviewWrap').style.display='block';
+    status.textContent='Hazır. Liste fiyatını girip "Analiz et"e bas.';
+  });
+}
+
+function analyzeImage(){
+  var status=document.getElementById('videoAnalyzeStatus');
+  if(!videoImageDataUrl){status.textContent='Önce fotoğraf seç.';return;}
+  status.textContent='🔍 Vera analiz ediyor...';
+  fetch('/api/vision/analyze',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({image:videoImageDataUrl})})
+    .then(function(r){return r.json()})
+    .then(function(data){
+      if(!data.ok){status.textContent='Hata: '+(data.message||data.error);return;}
+      fillProductForm(data.product);
+      document.getElementById('productForm').style.display='block';
+      status.textContent='Analiz tamam. Bilgileri düzeltip "Senaryo üret"e bas.';
+    })
+    .catch(function(e){status.textContent='Hata: '+e.message});
+}
+
+function fillProductForm(p){
+  p=p||{};
+  document.getElementById('pf_name').value=p.urun_adi||'';
+  document.getElementById('pf_category').value=p.kategori||'';
+  document.getElementById('pf_color').value=p.renk||'';
+  document.getElementById('pf_material').value=p.malzeme||'';
+  document.getElementById('pf_size').value=p.boyutlar||'';
+  document.getElementById('pf_features').value=(p.ozellikler||[]).join(', ');
+  document.getElementById('pf_audience').value=p.hedef_kitle||'';
+}
+
+function collectProduct(){
+  return {
+    urun_adi:document.getElementById('pf_name').value.trim(),
+    kategori:document.getElementById('pf_category').value.trim(),
+    renk:document.getElementById('pf_color').value.trim(),
+    malzeme:document.getElementById('pf_material').value.trim(),
+    boyutlar:document.getElementById('pf_size').value.trim(),
+    ozellikler:document.getElementById('pf_features').value.split(/[,;\n]/).map(function(s){return s.trim()}).filter(Boolean),
+    hedef_kitle:document.getElementById('pf_audience').value.trim()
+  };
+}
+
+function generateScript(){
+  var price=Number(document.getElementById('videoPrice').value);
+  var status=document.getElementById('videoAnalyzeStatus');
+  var resultBox=document.getElementById('videoResult');
+  if(!price||price<=0){status.textContent='Önce geçerli bir liste fiyatı gir.';return;}
+  var product=collectProduct();
+  status.textContent='✍️ Senaryo yazılıyor...';
+  resultBox.style.display='block';
+  resultBox.innerHTML='Vera yazıyor...';
+  fetch('/api/video/script',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({product:product,list_price_bs:price})})
+    .then(function(r){return r.json()})
+    .then(function(data){
+      if(!data.ok){resultBox.innerHTML='Hata: '+(data.message||data.error);status.textContent='';return;}
+      renderScript(data);
+      status.textContent='Hazır.';
+    })
+    .catch(function(e){resultBox.innerHTML='Hata: '+e.message;status.textContent=''});
+}
+
+function renderScript(d){
+  var html='';
+  html+='<div class="video-script"><span class="lbl">🇧🇴 İspanyolca senaryo</span>'+escapeHtml(d.script_es||'')+'</div>';
+  html+='<div class="video-script"><span class="lbl">🇹🇷 Türkçe çeviri</span>'+escapeHtml(d.script_tr||'')+'</div>';
+  if(d.storyboard&&d.storyboard.length){
+    html+='<div class="video-script"><span class="lbl">🎞️ Storyboard</span>';
+    d.storyboard.forEach(function(s){
+      s=s||{};
+      var t=s.zaman||'';var scene=s.sahne||'';var ov=s.ekran_yazisi||'';var vo=s.seslendirme||'';
+      html+='<div class="sb-scene"><span class="t">'+escapeHtml(t)+(scene?(' · '+escapeHtml(scene)):'')+'</span>'+(ov?('<br>📝 '+escapeHtml(ov)):'')+(vo?('<br>🎙 '+escapeHtml(vo)):'')+'</div>';
+    });
+    html+='</div>';
+  }
+  if(d.hashtags&&d.hashtags.length){
+    html+='<div class="video-script"><span class="lbl">🏷️ Hashtag</span>';
+    d.hashtags.forEach(function(h){html+='<span class="hashtag">'+escapeHtml(h)+'</span>'});
+    html+='</div>';
+  }
+  document.getElementById('videoResult').innerHTML=html;
 }
 
 window.addEventListener('DOMContentLoaded',function(){
