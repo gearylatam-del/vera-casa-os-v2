@@ -1,17 +1,36 @@
-import { buildContext, shouldForceNoApproval, ensureShippingWarning } from "./logic.js";
+import { buildContext, shouldForceNoApproval, ensureShippingWarning, calculatePricing } from "./logic.js";
+import { checkAuth, isPublic, rateLimit, clientKey, authErrorResponse, rateLimitResponse, safeEqual } from "./guard.js";
+
 export default {
   async fetch(request, env) {
     const url = new URL(request.url);
     const path = url.pathname;
 
-    await ensureTables(env);
+    // Veritabanı tabloları yalnızca API yollarında gerekir.
+    // (Önceden her istekte, panel dosyaları dahil çalışıyordu.)
+    if (path.startsWith("/api/")) {
+      await ensureTables(env);
+
+      // GÜVENLİK: sağlık kontrolü ve Shopify callback dışındaki
+      // her API yolu erişim şifresi ister.
+      if (!isPublic(path)) {
+        const auth = checkAuth(request, env, url);
+        if (!auth.ok) return authErrorResponse(auth);
+
+        // Sohbet, ücretsiz AI kotasını tükettiği için ayrıca sınırlanır.
+        if (path === "/api/chat" && request.method === "POST") {
+          const limit = rateLimit("chat:" + clientKey(request), 20, 60000);
+          if (!limit.ok) return rateLimitResponse(limit);
+        }
+      }
+    }
 
     if (path === "/" && request.method === "GET") {
-  const assetUrl = new URL("/index.html", request.url);
-  return env.ASSETS.fetch(new Request(assetUrl, request));
+      const assetUrl = new URL("/index.html", request.url);
+      return env.ASSETS.fetch(new Request(assetUrl, request));
     }
     if (path === "/api/health" && request.method === "GET") return health(env);
-    if (path === "/api/shopify/install" && request.method === "GET") return shopifyInstall(env);
+    if (path === "/api/shopify/install" && request.method === "GET") return shopifyInstall(request, env);
     if (path === "/api/shopify/callback" && request.method === "GET") return shopifyCallback(request, env);
     if (path === "/api/shopify/products" && request.method === "GET") return shopifyProducts(env);
     if (path === "/api/shopify/status" && request.method === "GET") return shopifyStatus(env);
@@ -35,7 +54,12 @@ function html(content) {
   });
 }
 
+// Tablolar isolate başına bir kez oluşturulur.
+// Hata artık sessizce yutulmaz, konsola yazılır.
+let tablesReady = false;
+
 async function ensureTables(env) {
+  if (tablesReady) return;
   try {
     await env.DB.prepare(
       `CREATE TABLE IF NOT EXISTS messages (
@@ -63,7 +87,10 @@ async function ensureTables(env) {
         created_at INTEGER NOT NULL
       )`
     ).run();
-  } catch (e) {}
+    tablesReady = true;
+  } catch (e) {
+    console.error("ensureTables hatası:", e && e.message ? e.message : String(e));
+  }
 }
 
 // ============ HEALTH ============
@@ -75,13 +102,21 @@ async function health(env) {
   return Response.json({
     ok: true,
     service: "VERA CASA OS",
-    version: "0.6.0",
+    version: "0.7.0",
     model: "@cf/meta/llama-3.3-70b-instruct-fp8-fast",
     supplier: "La Casa de Kadir",
     freeShippingThresholdBs: 500,
     memory: "d1",
     approvals: true,
-    smartPricing: true,
+    // Dürüstlük: fiyatlandırma henüz pazar araştırması içermiyor.
+    // Sadece formül çalışıyor. Rakip fiyat analizi eklenince true olacak.
+    smartPricing: false,
+    pricingMode: "formula_v1",
+    marketResearch: false,
+    security: {
+      tokenRequired: !!env.VERA_TOKEN,
+      shopifyCallbackGuarded: true,
+    },
     shopify: {
       configured: !!(env.SHOPIFY_CLIENT_ID && env.SHOPIFY_CLIENT_SECRET),
       store: env.SHOPIFY_STORE || null,
@@ -92,10 +127,13 @@ async function health(env) {
 
 // ============ SHOPIFY ============
 
-async function shopifyInstall(env) {
+async function shopifyInstall(request, env) {
   if (!env.SHOPIFY_CLIENT_ID || !env.SHOPIFY_CLIENT_SECRET) {
-    return new Response("Shopify yapılandırılmamış", { status: 500 });
+    return Response.json({ ok: false, error: "shopify_not_configured" }, { status: 500 });
   }
+  const url = new URL(request.url);
+  const wantsJson = url.searchParams.get("format") === "json";
+
   const state = crypto.randomUUID();
   await env.DB.prepare(
     `INSERT OR REPLACE INTO shopify_auth (key, value, created_at) VALUES ('state', ?, ?)`
@@ -111,6 +149,10 @@ async function shopifyInstall(env) {
     `&redirect_uri=${encodeURIComponent(redirectUri)}` +
     `&state=${state}`;
 
+  // Panel JSON ister ve adres çubuğuna kendisi gider; böylece erişim
+  // şifresi hiçbir URL'de görünmez.
+  if (wantsJson) return Response.json({ ok: true, auth_url: authUrl });
+
   return Response.redirect(authUrl, 302);
 }
 
@@ -120,14 +162,28 @@ async function shopifyCallback(request, env) {
   const state = url.searchParams.get("state");
   const shop = url.searchParams.get("shop");
 
-  if (!code || !shop) return new Response("Eksik parametre (code/shop)", { status: 400 });
+  if (!code || !shop || !state) {
+    return new Response("Eksik parametre (code/shop/state)", { status: 400 });
+  }
+
+  // 🛡️ KİLİT 1 — Mağaza beyaz listesi.
+  // Bu kontrol olmadan saldırgan shop=kotu-site.com gönderip
+  // SHOPIFY_CLIENT_SECRET'in kendi sunucusuna POST edilmesini sağlayabilirdi.
+  if (!env.SHOPIFY_STORE || shop !== env.SHOPIFY_STORE) {
+    return new Response("Geçersiz mağaza adresi", { status: 400 });
+  }
 
   const savedState = await env.DB.prepare(
     `SELECT value FROM shopify_auth WHERE key = 'state'`
   ).first();
 
-  if (!savedState || savedState.value !== state) {
-    return new Response("Geçersiz state", { status: 400 });
+  // 🛡️ KİLİT 2 — state tek kullanımlık.
+  // Doğrulamadan önce silinir; böylece aynı state ile ikinci kez
+  // istek atılamaz (tekrar saldırısı).
+  await env.DB.prepare(`DELETE FROM shopify_auth WHERE key = 'state'`).run();
+
+  if (!savedState || !safeEqual(savedState.value, state)) {
+    return new Response("Geçersiz veya kullanılmış state", { status: 400 });
   }
 
   const tokenResponse = await fetch(`https://${shop}/admin/oauth/access_token`, {
@@ -209,16 +265,18 @@ async function shopifyDisconnect(env) {
 function pricing(url) {
   const listPrice = Number(url.searchParams.get("listPrice"));
   if (!Number.isFinite(listPrice) || listPrice <= 0) {
-    return Response.json({ error: "valid_listPrice_required" }, { status: 400 });
+    return Response.json({ ok: false, error: "valid_listPrice_required" }, { status: 400 });
   }
-  return Response.json({
-    ok: true,
-    supplier_list_price: listPrice,
-    supplier_cost: listPrice * 0.80,
-    candidate_A: listPrice * 1.20,
-    candidate_B: listPrice * 1.25,
-    min_profit_rule: listPrice * 0.20,
-  });
+
+  const marketMinRaw = Number(url.searchParams.get("marketMinBs"));
+  const marketMinBs = Number.isFinite(marketMinRaw) ? marketMinRaw : null;
+
+  const result = calculatePricing(listPrice, marketMinBs);
+  if (!result) {
+    return Response.json({ ok: false, error: "valid_listPrice_required" }, { status: 400 });
+  }
+
+  return Response.json(result);
 }
 
 // ============ HAFIZA ============
