@@ -5,6 +5,12 @@ on:
     branches: [main]
   workflow_dispatch:
 
+# Aynı anda birden fazla deploy yarışmasın: yeni push gelince
+# önceki devam eden deploy iptal edilir, son commit kazanır.
+concurrency:
+  group: deploy
+  cancel-in-progress: true
+
 jobs:
   deploy:
     runs-on: ubuntu-latest
