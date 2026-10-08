@@ -1,5 +1,6 @@
 import { buildContext, shouldForceNoApproval, ensureShippingWarning, calculatePricing } from "./logic.js";
 import { checkAuth, isPublic, rateLimit, clientKey, authErrorResponse, rateLimitResponse, safeEqual } from "./guard.js";
+import { analyzeProductImage, generateVideoScript } from "./video.js";
 
 export default {
   async fetch(request, env) {
@@ -22,6 +23,13 @@ export default {
           const limit = rateLimit("chat:" + clientKey(request), 20, 60000);
           if (!limit.ok) return rateLimitResponse(limit);
         }
+
+        // Görsel analiz (vision) ücretli birim fiyatına sahip olduğu için
+        // daha sıkı sınırlanır: IP başına 10 dakikada 10 istek.
+        if (path === "/api/vision/analyze" && request.method === "POST") {
+          const limit = rateLimit("vision:" + clientKey(request), 10, 600000);
+          if (!limit.ok) return rateLimitResponse(limit);
+        }
       }
     }
 
@@ -41,6 +49,8 @@ export default {
     if (path === "/api/approvals" && request.method === "GET") return approvalsList(url, env);
     if (path === "/api/approvals/decide" && request.method === "POST") return approvalsDecide(request, env);
     if (path === "/api/chat" && request.method === "POST") return chat(request, env);
+    if (path === "/api/vision/analyze" && request.method === "POST") return visionAnalyze(request, env);
+    if (path === "/api/video/script" && request.method === "POST") return videoScript(request, env);
 
     return new Response("Not found", { status: 404 });
   },
@@ -277,6 +287,52 @@ function pricing(url) {
   }
 
   return Response.json(result);
+}
+
+// ============ VİDEO ASİSTANI ============
+
+async function visionAnalyze(request, env) {
+  try {
+    const body = await request.json().catch(() => ({}));
+    const image = (body.image || body.image_base64 || "").trim();
+    if (!image) {
+      return Response.json({ ok: false, error: "image_required" }, { status: 400 });
+    }
+    if (image.length > 8000000) {
+      return Response.json({ ok: false, error: "image_too_large" }, { status: 413 });
+    }
+    const { raw, product } = await analyzeProductImage(env, image);
+    return Response.json({ ok: true, product: product, raw: raw });
+  } catch (err) {
+    return Response.json({ ok: false, error: err.message || String(err) }, { status: 500 });
+  }
+}
+
+async function videoScript(request, env) {
+  try {
+    const body = await request.json().catch(() => ({}));
+    const product = body.product || {};
+    const listPrice = Number(body.list_price_bs ?? body.listPriceBs);
+    if (!Number.isFinite(listPrice) || listPrice <= 0) {
+      return Response.json({ ok: false, error: "valid_list_price_required" }, { status: 400 });
+    }
+    const pricing = calculatePricing(listPrice);
+    const recommendedPrice = pricing
+      ? pricing.recommendation.price
+      : Math.round(listPrice * 1.2 * 100) / 100;
+    const { script } = await generateVideoScript(env, product, listPrice, recommendedPrice);
+    return Response.json({
+      ok: true,
+      list_price_bs: listPrice,
+      recommended_price_bs: recommendedPrice,
+      script_es: script.script_es,
+      script_tr: script.script_tr,
+      storyboard: script.storyboard,
+      hashtags: script.hashtags,
+    });
+  } catch (err) {
+    return Response.json({ ok: false, error: err.message || String(err) }, { status: 500 });
+  }
 }
 
 // ============ HAFIZA ============
